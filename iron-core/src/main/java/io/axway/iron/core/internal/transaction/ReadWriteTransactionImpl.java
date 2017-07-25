@@ -1,16 +1,23 @@
 package io.axway.iron.core.internal.transaction;
 
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Method;
 import java.util.*;
 import java.util.concurrent.atomic.*;
+import javax.validation.*;
+import javax.validation.executable.*;
 import io.axway.iron.ReadWriteTransaction;
 import io.axway.iron.core.internal.entity.EntityStore;
 import io.axway.iron.core.internal.entity.EntityStoreManager;
+import io.axway.iron.core.internal.entity.InstanceProxy;
 import io.axway.iron.core.internal.utils.IntrospectionHelper;
+import io.axway.iron.error.StoreException;
 import io.axway.iron.functional.Accessor;
 
 import static com.google.common.base.Preconditions.checkState;
 
 public class ReadWriteTransactionImpl extends ReadOnlyTransactionImpl implements ReadWriteTransaction {
+    private static final ValidatorFactory VALIDATOR_FACTORY = Validation.buildDefaultValidatorFactory();
     private final List<Runnable> m_rollbackActions = new ArrayList<>();
     private final AtomicInteger m_activeObjectUpdaterCount = new AtomicInteger();
 
@@ -130,6 +137,32 @@ public class ReadWriteTransactionImpl extends ReadOnlyTransactionImpl implements
         public E done() {
             checkValid();
             m_valid = false;
+
+            try {
+                ExecutableValidator validator = VALIDATOR_FACTORY.getValidator().forExecutables();
+                InstanceProxy instance = (InstanceProxy) m_object;
+                Map<String/*Method name*/, Set<ConstraintViolation<InstanceProxy>>> violations = new HashMap<>();
+                for (Method method : instance.__entityClass().getMethods()) {
+                    violations.put(method.getName(), validator.validateReturnValue(instance, method, method.invoke(m_object)));
+                }
+                if (violations.size() > 0) {
+                    throw new StoreException("Invalid member value", arguments -> {
+                        arguments.add("class", instance.__entityClass().getName());
+                        final AtomicInteger violationId = new AtomicInteger(0);
+                        violations.forEach((member, memberViolations) -> {
+                            for (ConstraintViolation<InstanceProxy> violation : memberViolations) {
+                                int id = violationId.getAndIncrement();
+                                arguments.add("violation_" + id + "_member", member);
+                                arguments.add("violation_" + id + "_message", violation.getMessage());
+                                arguments.add("violation_" + id + "_value", violation.getInvalidValue());
+                            }
+                        });
+                    });
+                }
+            } catch (IllegalAccessException | InvocationTargetException e) {
+                throw new RuntimeException(e);
+            }
+
             m_activeObjectUpdaterCount.decrementAndGet();
             return m_object;
         }

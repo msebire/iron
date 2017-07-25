@@ -14,7 +14,6 @@ import io.axway.iron.core.internal.definition.entity.IdDefinition;
 import io.axway.iron.core.internal.definition.entity.RelationCardinality;
 import io.axway.iron.core.internal.definition.entity.RelationDefinition;
 import io.axway.iron.core.internal.utils.proxy.ProxyFactory;
-import io.axway.iron.error.NonnullConstraintViolationException;
 import io.axway.iron.error.UniqueConstraintViolationException;
 import io.axway.iron.error.UnrecoverableStoreException;
 import io.axway.iron.spi.model.snapshot.SerializableAttributeDefinition;
@@ -32,7 +31,6 @@ public class EntityStore<E> {
     private final Set<String> m_attributes;
     private final String m_idPropertyName;
     private final Map<String, Map<Object, Long>> m_uniquesIndex;
-    private final Set<String> m_nonNullAttributes;
     private final Map<String, RelationStore> m_relationStores;
 
     private final Map<Long, InstanceProxy> m_instancesById = new TreeMap<>();
@@ -52,12 +50,6 @@ public class EntityStore<E> {
         ImmutableMap.Builder<String, Map<Object, Long>> uniquesIndex = ImmutableMap.builder();
         entityDefinition.getUniqueConstraints().forEach(uniqueAttribute -> uniquesIndex.put(uniqueAttribute, new HashMap<>()));
         m_uniquesIndex = uniquesIndex.build();
-
-        ImmutableSet.Builder<String> nonNullAttributes = ImmutableSet.builder();
-        entityDefinition.getAttributes().values().stream() //
-                .filter(attributeDefinition -> !attributeDefinition.isNullable()) //
-                .forEach(attributeDefinition -> nonNullAttributes.add(attributeDefinition.getAttributeName()));
-        m_nonNullAttributes = nonNullAttributes.build();
 
         ImmutableMap.Builder<String, RelationStore> relationStoresBuilder = ImmutableMap.builder();
         entityDefinition.getRelations().values().forEach(relationDefinition -> {
@@ -110,10 +102,6 @@ public class EntityStore<E> {
 
     public <V> void set(E object, String propertyName, @Nullable V value) {
         InstanceProxy instance = (InstanceProxy) object;
-        if (value == null && m_nonNullAttributes.contains(propertyName)) {
-            throw new NonnullConstraintViolationException(m_entityName, propertyName);
-        }
-
         set(instance, propertyName, value);
     }
 
@@ -150,12 +138,6 @@ public class EntityStore<E> {
 
     public E insert(E object) {
         InstanceProxy instance = (InstanceProxy) object;
-        for (String nonNullAttribute : m_nonNullAttributes) {
-            if (instance.__get(nonNullAttribute) == null) {
-                throw new NonnullConstraintViolationException(m_entityName, nonNullAttribute);
-            }
-        }
-
         indexInstance(instance);
         m_instancesById.put(instance.__id(), instance);
         return m_entityClass.cast(instance);
@@ -196,10 +178,6 @@ public class EntityStore<E> {
 
     public <V> V update(E object, String propertyName, @Nullable V value) {
         InstanceProxy instance = (InstanceProxy) object;
-        if (value == null && m_nonNullAttributes.contains(propertyName)) {
-            throw new NonnullConstraintViolationException(m_entityName, propertyName);
-        }
-
         long instanceId = instance.__id();
         Map<Object, Long> index = m_uniquesIndex.get(propertyName);
         if (index != null && value != null) {
